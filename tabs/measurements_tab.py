@@ -906,7 +906,7 @@ def build(app):
             app.npix = getattr(ava, "npix_active", app.npix)
             app.data.npix = app.npix
 
-            app.spec_status.config(text=f"Connected: {app.sn}", foreground="green")
+            app.spec_status.config(text=f"Connected - Serial Number: {app.sn}", foreground="green")
         except Exception as e:
             app.spec = None
             app.spec_status.config(text="Disconnected", foreground="red")

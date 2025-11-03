@@ -29,6 +29,7 @@ def build(app):
         # Matplotlib figure
         app.live_fig = Figure(figsize=(8, 5), dpi=100)
         app.live_ax = app.live_fig.add_subplot(111)
+        # Title will be updated when spectrometer connects
         app.live_ax.set_title("Live Spectrum")
         app.live_ax.set_xlabel("Pixel")
         app.live_ax.set_ylabel("Counts")
@@ -325,6 +326,12 @@ def build(app):
     def _update_live_plot(self, x, y):
         def update():
             app.live_line.set_data(x, y)
+
+            # Update title with serial number if connected
+            if app.spec and hasattr(app, 'sn') and app.sn:
+                app.live_ax.set_title(f"Live Spectrum - Serial Number: {app.sn}")
+            else:
+                app.live_ax.set_title("Live Spectrum")
 
             # Only adjust limits when NOT locked
             if not app.live_limits_locked:
@@ -1093,7 +1100,7 @@ def build(app):
             app.npix = getattr(ava, "npix_active", app.npix)
             app.data.npix = app.npix
 
-            app.spec_status.config(text=f"Connected: {app.sn}", foreground="green")
+            app.spec_status.config(text=f"Connected - Serial Number: {app.sn}", foreground="green")
         except Exception as e:
             app.spec = None
             app.spec_status.config(text="Disconnected", foreground="red")

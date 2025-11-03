@@ -1694,7 +1694,15 @@ class SpectroApp(tk.Tk):
             self.data.npix = self.npix
 
             if hasattr(self, 'spec_status'):
-                self.spec_status.config(text=f"Connected: {self.sn}", foreground="green")
+                self.spec_status.config(text=f"Connected - Serial Number: {self.sn}", foreground="green")
+            # Update live view chart title if it exists
+            if hasattr(self, 'live_ax') and self.live_ax:
+                self.live_ax.set_title(f"Live Spectrum - Serial Number: {self.sn}")
+                if hasattr(self, 'live_fig') and self.live_fig:
+                    try:
+                        self.live_fig.canvas.draw_idle()
+                    except Exception:
+                        pass
         except Exception as e:
             self.spec = None
             if hasattr(self, 'spec_status'):
@@ -1713,6 +1721,14 @@ class SpectroApp(tk.Tk):
             self.spec = None
             if hasattr(self, 'spec_status'):
                 self.spec_status.config(text="Disconnected", foreground="red")
+            # Update live view chart title when disconnected
+            if hasattr(self, 'live_ax') and self.live_ax:
+                self.live_ax.set_title("Live Spectrum")
+                if hasattr(self, 'live_fig') and self.live_fig:
+                    try:
+                        self.live_fig.canvas.draw_idle()
+                    except Exception:
+                        pass
         except Exception as e:
             self._post_error("Spectrometer Disconnect", e)
 

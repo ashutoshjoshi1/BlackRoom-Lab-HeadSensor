@@ -907,7 +907,6 @@ def build(app):
             app.data.npix = app.npix
 
             app.spec_status.config(text=f"Connected: {app.sn}", foreground="green")
-            messagebox.showinfo("Spectrometer", f"Connected to SN={app.sn}")
         except Exception as e:
             app.spec = None
             app.spec_status.config(text="Disconnected", foreground="red")

@@ -1695,7 +1695,6 @@ class SpectroApp(tk.Tk):
 
             if hasattr(self, 'spec_status'):
                 self.spec_status.config(text=f"Connected: {self.sn}", foreground="green")
-            messagebox.showinfo("Spectrometer", f"Connected to SN={self.sn}")
         except Exception as e:
             self.spec = None
             if hasattr(self, 'spec_status'):

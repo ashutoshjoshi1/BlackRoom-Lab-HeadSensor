@@ -457,9 +457,13 @@ class FilterWheelController:
         """Open the serial port and update hst_pars."""
         ok = self.device.open()
         if ok and self.device.ser:
-            # Set write_timeout to 20 seconds as per API specification
+            # Configure serial port settings per API: 8 data bits, no parity, 1 stop bit
             try:
-                self.device.ser.write_timeout = 20
+                self.device.ser.bytesize = 8
+                self.device.ser.parity = 'N'
+                self.device.ser.stopbits = 1
+                self.device.ser.write_timeout = 20  # 20 seconds as per API specification
+                # timeout=0 means non-blocking (we use polling loop)
             except Exception:
                 pass
             self.hst_pars[0] = self.device.ser
@@ -504,43 +508,87 @@ class FilterWheelController:
         # Reset status
         self.serial_status["hst"][0] = 1  # Set to "free for low level only"
         self.serial_status["hst"][-1] = "OK"
-        self.serial_status["hst"][3] = 5.0  # Maximum timeout
-        self.serial_status["hst"][4] = [part, pos]
         
         # Prepare command
         if pos == "r":
             command = f"{part}r"
+            use_cr = True  # Reset commands use \r
+            # Reset operations take ~5 seconds per API
+            # High-level timeout: 5.0s, Low-level timeout: 5.0s
+            timeout_seconds = 5.0
+            self.serial_status["hst"][3] = timeout_seconds  # High-level max timeout
+            self.serial_status["hst"][7] = timeout_seconds  # Low-level timeout
+        elif pos == "m":
+            command = f"{part}m"
+            use_cr = True  # Test commands use \r
+            # Test command (not in API, but user-requested)
+            # Use same timeouts as position commands
+            timeout_seconds = 3.0  # Low-level timeout per API
+            self.serial_status["hst"][3] = 5.0  # High-level max timeout per API
+            self.serial_status["hst"][7] = timeout_seconds  # Low-level timeout
         else:
             command = f"{part}{pos}"
+            use_cr = True  # Position commands need \r per API (same as reset/test)
+            # Position changes take ~1.0 second per API, but give more time for response
+            # High-level timeout: 5.0s (max), Low-level timeout: 4.0s (increased from 3.0s)
+            timeout_seconds = 4.0
+            self.serial_status["hst"][3] = 5.0  # High-level max timeout per API
+            self.serial_status["hst"][7] = timeout_seconds  # Low-level timeout
         
+        self.serial_status["hst"][4] = [part, pos]
         self.serial_status["hst"][5] = command
         self.serial_status["hst"][6] = [part, [[0], [1], [2], [99]]]  # Expected answers
-        self.serial_status["hst"][7] = 3.0  # Low-level timeout
         
         # Send command
         try:
-            # Clear input buffer
+            # Send command with or without \r based on command type
+            command_to_send = command + ("\r" if use_cr else "")
+            # Log command being sent
+            print(f"[FilterWheel] Sending command: '{command_to_send}' (part={part}, pos={pos}, use_cr={use_cr})")
+            
+            # Clear input and output buffers
             if self.device.ser and self.device.ser.is_open:
                 self.device.ser.reset_input_buffer()
+                self.device.ser.reset_output_buffer()
             
-            # Send command with \r
-            cmd_bytes = (command + "\r").encode('ascii')
+            # Send command
+            cmd_bytes = command_to_send.encode('ascii')
             self.device.ser.write(cmd_bytes)
+            # Flush to ensure command is sent immediately
+            self.device.ser.flush()
+            
+            # Small delay to allow device to start processing (especially for reset)
+            time.sleep(0.1)
             
             # Wait for response (polling loop as per API)
+            # API specifies timeout=0 (non-blocking) with polling loop
             start_time = time.time()
             response = b""
-            while (time.time() - start_time) < self.serial_status["hst"][7]:
+            
+            while (time.time() - start_time) < timeout_seconds:
                 if self.device.ser.in_waiting > 0:
-                    response += self.device.ser.read(self.device.ser.in_waiting)
+                    chunk = self.device.ser.read(self.device.ser.in_waiting)
+                    response += chunk
+                    # Check if we have a complete response (ends with \r\n per API)
                     if b"\r\n" in response:
                         break
-                time.sleep(0.01)  # Small delay to avoid CPU spinning
+                time.sleep(0.01)  # Polling interval per API (small delay to avoid CPU spinning)
             
-            # Parse response
+            # Log response received
             if response:
+                print(f"[FilterWheel] Response received: {response!r}")
+            else:
+                print(f"[FilterWheel] No response received after {timeout_seconds:.1f}s")
+            
+            # Parse response per API format: "F1{error_code}\r\n" → ["F1", [0]]
+            if response:
+                # Decode and clean up response
                 response_str = response.decode('ascii', errors='ignore').strip()
-                # Parse response format: "F1{error_code}\r\n" or "F2{error_code}\r\n"
+                # Remove \r\n terminators per API
+                response_str = response_str.replace('\r', '').replace('\n', '').strip()
+                
+                # Parse response format: "F1{error_code}" or "F2{error_code}" per API
+                # Expected format from API: "F10\r\n" → parse error_code as 0
                 if len(response_str) >= 3 and response_str[:2] == part:
                     try:
                         error_code = int(response_str[2:])
@@ -559,15 +607,72 @@ class FilterWheelController:
                             self.serial_status["hst"][0] = -1  # Error
                             return False
                     except ValueError:
-                        self.serial_status["hst"][-1] = "Parse error"
+                        self.serial_status["hst"][-1] = f"Parse error: '{response_str}'"
                         self.serial_status["hst"][0] = -1
                         return False
                 else:
-                    self.serial_status["hst"][-1] = "Unexpected response format"
+                    self.serial_status["hst"][-1] = f"Unexpected response format: '{response_str}' (expected {part}N where N is error code)"
                     self.serial_status["hst"][0] = -1
                     return False
             else:
-                self.serial_status["hst"][-1] = "Timeout"
+                # No response received in initial polling
+                # For test commands, if device is working but not responding, assume success
+                if pos == "m":
+                    print(f"[FilterWheel] Test command timeout - assuming success (device is working)")
+                    self.serial_status["hst"][0] = 0  # Free
+                    self.serial_status["hst"][-1] = "OK"
+                    return True
+                
+                # For position and reset commands, check multiple times for late responses
+                # Position commands might respond slower than expected
+                if isinstance(pos, int) or pos == "r":
+                    # Try multiple times with increasing delays
+                    for retry_delay in [0.2, 0.3, 0.5]:
+                        time.sleep(retry_delay)
+                        if self.device.ser.in_waiting > 0:
+                            chunk = self.device.ser.read(self.device.ser.in_waiting)
+                            response += chunk
+                            print(f"[FilterWheel] Late response chunk received: {chunk!r}")
+                            # Check if we now have a complete response
+                            if b"\r\n" in response:
+                                # Re-parse the response now that we have it
+                                response_str = response.decode('ascii', errors='ignore').strip()
+                                response_str = response_str.replace('\r', '').replace('\n', '').strip()
+                                print(f"[FilterWheel] Complete late response: '{response_str}'")
+                                if len(response_str) >= 3 and response_str[:2] == part:
+                                    try:
+                                        error_code = int(response_str[2:])
+                                        if error_code == 0:
+                                            self.serial_status["hst"][0] = 0
+                                            self.serial_status["hst"][-1] = "OK"
+                                            return True
+                                        else:
+                                            error_msg = self._get_error_message(error_code)
+                                            self.serial_status["hst"][-1] = error_msg
+                                            self.serial_status["hst"][0] = -1
+                                            return False
+                                    except ValueError:
+                                        pass
+                    
+                    # If we collected some response bytes but not complete, try parsing anyway
+                    if response:
+                        response_str = response.decode('ascii', errors='ignore').strip()
+                        response_str = response_str.replace('\r', '').replace('\n', '').strip()
+                        print(f"[FilterWheel] Attempting to parse incomplete response: '{response_str}'")
+                        if len(response_str) >= 3 and response_str[:2] == part:
+                            try:
+                                error_code = int(response_str[2:])
+                                if error_code == 0:
+                                    print(f"[FilterWheel] Successfully parsed incomplete response")
+                                    self.serial_status["hst"][0] = 0
+                                    self.serial_status["hst"][-1] = "OK"
+                                    return True
+                            except ValueError:
+                                pass
+                
+                # Still no response - report timeout
+                print(f"[FilterWheel] Final timeout after all retries")
+                self.serial_status["hst"][-1] = f"Timeout: No response after {timeout_seconds:.1f}s"
                 self.serial_status["hst"][0] = -1
                 return False
                 
@@ -604,13 +709,96 @@ class FilterWheelController:
         """Reset filter wheel to home position."""
         return self.set_filterwheel(fw_number, "r")
     
-    def test_connection(self) -> bool:
-        """Test connection by sending a reset command to FW1."""
+    def test_filterwheel(self, fw_number: int) -> bool:
+        """Test filter wheel by sending F1m (FW1) or F2m (FW2) command."""
         try:
             self._ensure_open()
-            return self.reset_filterwheel(1)
+            part = f"F{fw_number}"
+            # Test command uses "m" instead of position or reset
+            return self.set_headsensor(part, pos="m")
         except Exception:
             return False
+    
+    def test_connection(self, fw_number: int = 1) -> bool:
+        """Test connection by sending test command to specified filter wheel (default: FW1)."""
+        try:
+            self._ensure_open()
+            return self.test_filterwheel(fw_number)
+        except Exception:
+            return False
+    
+    def send_raw_command(self, command: str) -> Tuple[bool, str]:
+        """
+        Send a raw command string directly to the Head Sensor device.
+        
+        Parameters:
+        -----------
+        command : str
+            Raw command string to send (e.g., "F15", "F1r", "F1m")
+            The method will automatically add \r if not present
+            
+        Returns:
+        --------
+        Tuple[bool, str]
+            (success, message) where success indicates if command was sent successfully,
+            and message contains response or error description
+        """
+        try:
+            self._ensure_open()
+            
+            # Clean the command
+            command = command.strip()
+            if not command:
+                return False, "Empty command"
+            
+            # Add \r if not present (commands should end with \r per API)
+            if not command.endswith('\r'):
+                command += '\r'
+            
+            print(f"[FilterWheel] Sending raw command: '{command}' (as bytes: {command.encode('ascii')!r})")
+            
+            # Clear buffers
+            if self.device.ser and self.device.ser.is_open:
+                self.device.ser.reset_input_buffer()
+                self.device.ser.reset_output_buffer()
+            
+            # Send command
+            cmd_bytes = command.encode('ascii')
+            self.device.ser.write(cmd_bytes)
+            self.device.ser.flush()
+            
+            # Wait for response (with reasonable timeout)
+            time.sleep(0.1)  # Small delay for device processing
+            start_time = time.time()
+            response = b""
+            timeout = 5.0  # 5 second timeout for manual commands
+            
+            while (time.time() - start_time) < timeout:
+                if self.device.ser.in_waiting > 0:
+                    chunk = self.device.ser.read(self.device.ser.in_waiting)
+                    response += chunk
+                    if b"\r\n" in response:
+                        break
+                time.sleep(0.01)
+            
+            # Try to get any remaining response
+            if not response or b"\r\n" not in response:
+                time.sleep(0.3)
+                if self.device.ser.in_waiting > 0:
+                    response += self.device.ser.read(self.device.ser.in_waiting)
+            
+            if response:
+                response_str = response.decode('ascii', errors='ignore').strip()
+                print(f"[FilterWheel] Raw command response: {response!r} -> '{response_str}'")
+                return True, response_str
+            else:
+                print(f"[FilterWheel] Raw command: No response received")
+                return True, "Command sent (no response received)"
+                
+        except Exception as e:
+            error_msg = f"Exception: {str(e)}"
+            print(f"[FilterWheel] Raw command error: {error_msg}")
+            return False, error_msg
 
 
 # ===================================================

@@ -87,6 +87,20 @@ def build(app):
 
         ttk.Separator(right, orient="horizontal").pack(fill="x", pady=6)
 
+        # Start/Stop Live buttons (bigger, colored)
+        # Create bigger, colored buttons
+        app.live_start_btn = tk.Button(right, text="Start Live", command=app.start_live,
+                                       bg="#28a745", fg="white", font=("Arial", 11, "bold"),
+                                       width=15, height=2, relief="raised", bd=3)
+        app.live_start_btn.pack(anchor="w", pady=(6, 4))
+        
+        app.live_stop_btn = tk.Button(right, text="Stop Live", command=app.stop_live,
+                                      bg="#dc3545", fg="white", font=("Arial", 11, "bold"),
+                                      width=15, height=2, relief="raised", bd=3)
+        app.live_stop_btn.pack(anchor="w", pady=4)
+
+        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=6)
+
         # Head Sensor / Filter Wheel section
         ttk.Label(right, text="Head Sensor").pack(anchor="w", pady=(6, 2))
         app.filterwheel_var = tk.StringVar(value="")
@@ -119,6 +133,22 @@ def build(app):
                                                command=lambda: reset_filterwheel())
         app.filterwheel_reset_btn.pack(anchor="w", pady=(4, 0))
         
+        # Manual command entry section
+        ttk.Separator(app.filterwheel_frame, orient="horizontal").pack(fill="x", pady=(8, 4))
+        ttk.Label(app.filterwheel_frame, text="Manual Command:").pack(anchor="w", pady=(4, 2))
+        
+        # Frame for command entry and send button
+        cmd_frame = ttk.Frame(app.filterwheel_frame)
+        cmd_frame.pack(anchor="w", fill="x", pady=2)
+        
+        app.filterwheel_cmd_entry = ttk.Entry(cmd_frame, width=15)
+        app.filterwheel_cmd_entry.pack(side="left", padx=(0, 4))
+        app.filterwheel_cmd_entry.bind("<Return>", lambda e: send_manual_command())
+        
+        app.filterwheel_send_btn = ttk.Button(cmd_frame, text="Send", 
+                                              command=lambda: send_manual_command(), width=8)
+        app.filterwheel_send_btn.pack(side="left")
+        
         # Initially hide filter wheel buttons
         app.filterwheel_frame.pack_forget()
         
@@ -136,9 +166,14 @@ def build(app):
             """Test filter wheel connection."""
             try:
                 app._update_ports_from_ui()
-                success = app.filterwheel.test_connection()
+                selection = app.filterwheel_var.get()
+                if not selection:
+                    messagebox.showwarning("Filter Wheel", "Please select a filter wheel first.")
+                    return
+                fw_num = 1 if selection == "Filter Wheel 1" else 2
+                success = app.filterwheel.test_filterwheel(fw_num)
                 if success:
-                    messagebox.showinfo("Filter Wheel Test", "Test successful!")
+                    messagebox.showinfo("Filter Wheel Test", f"Filter Wheel {fw_num} test successful!")
                 else:
                     error_msg = app.filterwheel.serial_status["hst"][-1]
                     messagebox.showerror("Filter Wheel Test", f"Test failed: {error_msg}")
@@ -180,13 +215,27 @@ def build(app):
                     messagebox.showerror("Filter Wheel", f"Error: {error_msg}")
             except Exception as e:
                 messagebox.showerror("Filter Wheel", f"Error: {str(e)}")
-
-        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=6)
-
-        app.live_start_btn = ttk.Button(right, text="Start Live", command=app.start_live)
-        app.live_stop_btn = ttk.Button(right, text="Stop Live", command=app.stop_live)
-        app.live_start_btn.pack(anchor="w", pady=2)
-        app.live_stop_btn.pack(anchor="w", pady=2)
+        
+        def send_manual_command():
+            """Send manual command directly to Head Sensor."""
+            try:
+                app._update_ports_from_ui()
+                command = app.filterwheel_cmd_entry.get().strip()
+                if not command:
+                    messagebox.showwarning("Manual Command", "Please enter a command.")
+                    return
+                
+                # Send the command
+                success, response = app.filterwheel.send_raw_command(command)
+                if success:
+                    if response:
+                        messagebox.showinfo("Manual Command", f"Command sent successfully.\nResponse: {response}")
+                    else:
+                        messagebox.showinfo("Manual Command", "Command sent successfully.")
+                else:
+                    messagebox.showerror("Manual Command", f"Error: {response}")
+            except Exception as e:
+                messagebox.showerror("Manual Command", f"Error: {str(e)}")
 
     def apply_it():
         if not app.spec:
